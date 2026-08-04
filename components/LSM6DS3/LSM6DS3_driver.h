@@ -33,6 +33,8 @@ esp_err_t lsm6ds3_setup_event_window(void);
 esp_err_t lsm6ds3_desetup(void);
 esp_err_t lsm6ds3_read_fifo(uint8_t *data, size_t len);
 uint16_t lsm6ds3_get_fifo_word_count(void);
+esp_err_t lsm6ds3_setup_continuous_with_wakeup(void);
+esp_err_t lsm6ds3_reset_fifo(void);
 
 bool lsm6ds_check_int1(void);
 bool lsm6ds_check_int2(void);

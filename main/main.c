@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <inttypes.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -21,9 +22,7 @@
 
 #define BLINK_LED_PIN   2
 #define LOG_FILE_PATH   "/sdcard/sensor_log.txt"
-#define SENSOR_DATA_FILE_PATH  "/sdcard/sensor_data.txt"
 
-// SPI Pins for SD Card Reader
 #define PIN_NUM_MISO 19
 #define PIN_NUM_MOSI 23
 #define PIN_NUM_CLK  18
@@ -38,9 +37,10 @@ typedef struct {
     int16_t accel_z;
 } __attribute__((packed)) sensor_sample;
 
-const char * TAG = "MAIN";
+static const char *TAG = "MAIN";
 sdmmc_card_t *card = NULL;
 bool sd_card_ready = false;
+char current_log_path[128] = LOG_FILE_PATH;
 
 void led_init(void) {
     gpio_config_t led_conf = {
@@ -55,19 +55,16 @@ void led_init(void) {
 
 void init_internal_clock(void) {
     struct tm t = {
-        .tm_year = 2026 - 1900, // 2026
-        .tm_mon = 6,            // July (0-11)
-        .tm_mday = 9,           // Day of the month
+        .tm_year = 2026 - 1900,
+        .tm_mon = 6,
+        .tm_mday = 9,
         .tm_hour = 17,
         .tm_min = 5,
         .tm_sec = 0
     };
     
     time_t t_of_day = mktime(&t);
-    struct timeval tv = {
-        .tv_sec = t_of_day,
-        .tv_usec = 0
-    };
+    struct timeval tv = { .tv_sec = t_of_day, .tv_usec = 0 };
     settimeofday(&tv, NULL);
 }
 
@@ -81,7 +78,6 @@ void init_sd_card(void) {
         .allocation_unit_size = 16 * 1024
     };
 
-    ESP_LOGI("SD_CARD", "Initializing SPI bus...");
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.max_freq_khz = SDMMC_FREQ_PROBING;
 
@@ -96,7 +92,7 @@ void init_sd_card(void) {
 
     ret = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
     if (ret != ESP_OK) {
-        ESP_LOGE("SD_CARD", "Failed to initialize SPI bus.");
+        ESP_LOGE(TAG, "Failed to initialize SPI bus.");
         return;
     }
 
@@ -109,34 +105,17 @@ void init_sd_card(void) {
     slot_config.gpio_cs = PIN_NUM_CS;
     slot_config.host_id = host.slot;
 
-    ESP_LOGI("SD_CARD", "Mounting filesystem...");
     ret = esp_vfs_fat_sdspi_mount("/sdcard", &host, &slot_config, &mount_config, &card);
-
     if (ret != ESP_OK) {
-        ESP_LOGE("SD_CARD", "Failed to mount filesystem (0x%X).", ret);
+        ESP_LOGE(TAG, "Failed to mount SD card.");
         sd_card_ready = false;
         return;
     }
     
     sd_card_ready = true;
-    ESP_LOGI("SD_CARD", "SD Card mounted successfully!");
-
-    // Create a CSV header row if the file doesn't exist yet
-    FILE *f = fopen(LOG_FILE_PATH, "r");
-    if (f == NULL) {
-        f = fopen(LOG_FILE_PATH, "w");
-        if (f != NULL) {
-            fprintf(f, "Timestamp Sample_Index Gyro_X Gyro_Y Gyro_Z Accel_X Accel_Y Accel_Z\n");
-            fclose(f);
-        }
-    } else {
-        fclose(f);
-    }
+    ESP_LOGI(TAG, "SD Card mounted successfully!");
 }
 
-char current_log_path[128] = LOG_FILE_PATH; // Fallback default
-
-// Function to scan the SD card and find the next sequential folder number
 void create_next_session_folder(void) {
     if (!sd_card_ready) return;
 
@@ -145,52 +124,36 @@ void create_next_session_folder(void) {
     
     if (dir != NULL) {
         struct dirent *de;
-        // Scan all items in the root directory
         while ((de = readdir(dir)) != NULL) {
-            // Check if the folder name is a number
             int current_id;
             if (sscanf(de->d_name, "%d", &current_id) == 1) {
                 if (current_id >= next_session_id) {
-                    next_session_id = current_id + 1; // Set to next available ID
+                    next_session_id = current_id + 1;
                 }
             }
         }
         closedir(dir);
     }
 
-    // Create the full path string for the new directory
     char folder_path[64];
     snprintf(folder_path, sizeof(folder_path), "/sdcard/%d", next_session_id);
 
-    // Create the physical directory on the FAT32 filesystem
     struct stat st = {0};
     if (stat(folder_path, &st) == -1) {
-        if (mkdir(folder_path, 0777) == 0) {
-            ESP_LOGW("SYSTEM", "Created brand new session folder: %s", folder_path);
-        } else {
-            ESP_LOGE("SYSTEM", "Failed to create directory %s", folder_path);
-            return;
-        }
+        mkdir(folder_path, 0777);
     }
 
-    // Update the global path variable for your logging loops to use
     snprintf(current_log_path, sizeof(current_log_path), "%s/sensor_log.txt", folder_path);
+
+    FILE *f = fopen(current_log_path, "w");
+    if (f != NULL) {
+        fprintf(f, "Timestamp,Sample_Index,Gyro_X,Gyro_Y,Gyro_Z,Accel_X,Accel_Y,Accel_Z\n");
+        fclose(f);
+    }
 }
 
-void log_acc_info(const char *timestamp) {
-    if (!sd_card_ready) return;
-
-    FILE *f = fopen(current_log_path, "a"); // "a" opens in standard ASCII text append mode
-    if (f == NULL) return;
-
-    fprintf(f, "freq: %d\n i2c speed: %d\n samples per interrupt: %d\n start time: %s\n", FREQ, I2C_MASTER_CLK_SPEED, NUM_SAMPLES_PER_BATCH, timestamp);
-
-    fclose(f);
-}
-
-// Formats and logs the samples as standard readable text strings
 void log_text_to_sd(const char *timestamp, sensor_sample *samples, int count) {
-    if (!sd_card_ready) return;
+    if (!sd_card_ready || count <= 0) return;
 
     FILE *f = fopen(current_log_path, "a");
     if (f == NULL) return;
@@ -208,6 +171,7 @@ void app_main(void)
 {
     led_init();
     init_sd_card();
+    create_next_session_folder();
     init_internal_clock();
     
     i2c_init();
@@ -215,58 +179,118 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(15)); 
 
     interrupt_init();
-    lsm6ds3_setup_event_window();
-    lsm6ds3_configure_motion_interrupt();
+    lsm6ds3_setup_continuous_with_wakeup();
 
-    lsm6ds3_start();
-
-    static uint8_t data[FIFO_THR_BYTES];
+    static uint8_t dummy_buffer[4096];
+    static uint8_t fifo_buffer[4096];
     uint8_t wakeup_status = 0;
+    uint32_t capture_round = 0;
     time_t now;
     struct tm timeinfo;
     char strftime_buf[64];
 
     lsm6ds3_read_wakeup_source(&wakeup_status);
-    uint16_t fifo_word_count = lsm6ds3_get_fifo_word_count();
-    lsm6ds3_read_fifo(data, fifo_word_count > 0 ? fifo_word_count : 12); 
-    ESP_LOGI(TAG, "Hardware flushes completed. Entering operational loop...");
+    lsm6ds3_reset_fifo();
 
-    time(&now);
-    localtime_r(&now, &timeinfo);
-    strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);   
-    log_acc_info(strftime_buf);
+    ESP_LOGI(TAG, "System Ready. Waiting for motion...");
+
+    #define PRE_TRIGGER_SAMPLES   52
+    #define POST_TRIGGER_SAMPLES  104
+
+    #define WORDS_PER_SAMPLE      6
+    #define BYTES_PER_SAMPLE      12
+
+    #define PRE_TRIGGER_WORDS     (PRE_TRIGGER_SAMPLES * WORDS_PER_SAMPLE)
+    #define POST_TRIGGER_WORDS    (POST_TRIGGER_SAMPLES * WORDS_PER_SAMPLE)
+
+    #define TOTAL_WORDS           (PRE_TRIGGER_WORDS + POST_TRIGGER_WORDS)
+    #define TOTAL_BYTES           (TOTAL_WORDS * 2)
 
     while (1)
     {
         esp_light_sleep_start();
-
         gpio_set_level(BLINK_LED_PIN, 1);
 
-        uint16_t fifo_word_count = lsm6ds3_get_fifo_word_count();
-        uint16_t bytes_available = fifo_word_count * 2;
+        // -------------------------------------------------------------------------------------------
 
-        if (bytes_available >= FIFO_THR_BYTES)
+        // Clear interrupt source
+        lsm6ds3_read_wakeup_source(&wakeup_status);
+
+
+        // How many FIFO words currently exist?
+        uint16_t fifo_words = lsm6ds3_get_fifo_word_count();
+
+        ESP_LOGI(TAG, "FIFO contains %d words (%d samples)",
+                fifo_words,
+                fifo_words / WORDS_PER_SAMPLE);
+
+
+        // We need to keep the newest PRE_TRIGGER samples.
+        // Remove the oldest ones.
+
+        if (fifo_words < PRE_TRIGGER_WORDS)
         {
-            time(&now);
-            localtime_r(&now, &timeinfo);
-            strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-            
-            lsm6ds3_read_fifo(data, FIFO_THR_BYTES);
-            lsm6ds3_read_wakeup_source(&wakeup_status);
-
-            sensor_sample *samples = (sensor_sample *)data;
-            int total_samples = FIFO_THR_BYTES / sizeof(sensor_sample);
-
-            // Write the array out as clean readable text strings
-            log_text_to_sd(strftime_buf, samples, total_samples);
-
-            ESP_LOGI(TAG, "[%s] Successfully logged %d text rows to SD Card.", strftime_buf, total_samples);
+            ESP_LOGW(TAG, "Not enough samples before trigger");
+            lsm6ds3_reset_fifo();
+            continue;
         }
-        else {
-            ESP_LOGI(TAG, "Accumulating... FIFO word count: %d", fifo_word_count);
+
+
+        uint16_t words_to_discard = fifo_words - PRE_TRIGGER_WORDS;
+
+
+        // Convert words to bytes because read_fifo() takes bytes
+        uint32_t discard_bytes = words_to_discard * 2;
+
+
+        if(discard_bytes > 0)
+        {
+            lsm6ds3_read_fifo(dummy_buffer, discard_bytes);
         }
+
+
+        ESP_LOGI(TAG, "Waiting for post-trigger data");
+
+
+        // Now FIFO contains exactly PRE_TRIGGER samples
+        // Wait until it contains PRE + POST samples
+
+        while(lsm6ds3_get_fifo_word_count() < TOTAL_WORDS)
+        {
+            uint16_t words = lsm6ds3_get_fifo_word_count();
+
+            ESP_LOGI(TAG,
+                    "FIFO: %d words (%d/%d samples)",
+                    words,
+                    words / WORDS_PER_SAMPLE,
+                    PRE_TRIGGER_SAMPLES + POST_TRIGGER_SAMPLES);
+
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+
+        // Now read everything at once
+        ESP_ERROR_CHECK(
+            lsm6ds3_read_fifo(
+                fifo_buffer,
+                TOTAL_BYTES
+            )
+        );
+
+
+        lsm6ds3_reset_fifo();
         
+        // -------------------------------------------------------------------------------------------
+
+        // 6. Log event to SD card
+        time(&now);
+        localtime_r(&now, &timeinfo);
+        strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        log_text_to_sd(strftime_buf, (sensor_sample *)fifo_buffer, PRE_TRIGGER_SAMPLES + POST_TRIGGER_SAMPLES);
+
+
+        // -------------------------------------------------------------------------------------------
+
         gpio_set_level(BLINK_LED_PIN, 0);
-        vTaskDelay(pdMS_TO_TICKS(10)); 
     }
 }
