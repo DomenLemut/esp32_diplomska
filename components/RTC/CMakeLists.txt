@@ -1,0 +1,1 @@
+idf_component_register(SRCS "RTC.c" INCLUDE_DIRS "." REQUIRES WiFi esp_wifi esp_event nvs_flash esp_netif)

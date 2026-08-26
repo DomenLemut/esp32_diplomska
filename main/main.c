@@ -10,9 +10,12 @@
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 
 #include "LSM6DS3_driver.h"
 #include "LSM6DS3_conf.h"
+#include "RTC.h"
+#include "WiFi.h"
 
 #include "esp_vfs_fat.h"
 #include "driver/sdspi_host.h"
@@ -28,6 +31,8 @@
 #define PIN_NUM_MOSI 23
 #define PIN_NUM_CLK  18
 #define PIN_NUM_CS   5
+
+static adc_oneshot_unit_handle_t adc1_handle;
 
 typedef struct {
     int16_t gyro_x;   
@@ -53,22 +58,57 @@ void led_init(void) {
     ESP_ERROR_CHECK(gpio_config(&led_conf));
 }
 
-void init_internal_clock(void) {
-    struct tm t = {
-        .tm_year = 2026 - 1900, // 2026
-        .tm_mon = 6,            // July (0-11)
-        .tm_mday = 9,           // Day of the month
-        .tm_hour = 17,
-        .tm_min = 5,
-        .tm_sec = 0
+void adc_init(void)
+{
+    adc_oneshot_unit_init_cfg_t init_config = {
+        .unit_id = ADC_UNIT_1,
     };
-    
-    time_t t_of_day = mktime(&t);
-    struct timeval tv = {
-        .tv_sec = t_of_day,
-        .tv_usec = 0
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_new_unit(&init_config, &adc1_handle)
+    );
+
+    adc_oneshot_chan_cfg_t channel_config = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
     };
-    settimeofday(&tv, NULL);
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_config_channel(
+            adc1_handle,
+            ADC_CHANNEL_0,   // GPIO36
+            &channel_config
+        )
+    );
+}
+
+int read_adc_raw(void)
+{
+    int adc_value = 0;
+
+    ESP_ERROR_CHECK(
+        adc_oneshot_read(
+            adc1_handle,
+            ADC_CHANNEL_0,
+            &adc_value
+        )
+    );
+
+    return adc_value;
+}
+
+int read_adc(void)
+{
+    int sum = 0;
+    int samples = 16;
+
+    for(int i = 0; i < samples; i++)
+    {
+        sum += read_adc_raw();
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+
+    return sum / samples;
 }
 
 void init_sd_card(void) {
@@ -134,56 +174,97 @@ void init_sd_card(void) {
     }
 }
 
-char current_log_path[128] = LOG_FILE_PATH; // Fallback default
+char current_log_path[128] = LOG_FILE_PATH;
+char current_setup_path[128] = SENSOR_DATA_FILE_PATH;
 
 // Function to scan the SD card and find the next sequential folder number
-void create_next_session_folder(void) {
-    if (!sd_card_ready) return;
+void create_next_session_folder(void)
+{
+    if (!sd_card_ready)
+        return;
 
     int next_session_id = 0;
+
     DIR *dir = opendir("/sdcard");
-    
-    if (dir != NULL) {
+
+    if (dir != NULL)
+    {
         struct dirent *de;
-        // Scan all items in the root directory
-        while ((de = readdir(dir)) != NULL) {
-            // Check if the folder name is a number
+
+        while ((de = readdir(dir)) != NULL)
+        {
             int current_id;
-            if (sscanf(de->d_name, "%d", &current_id) == 1) {
-                if (current_id >= next_session_id) {
-                    next_session_id = current_id + 1; // Set to next available ID
-                }
+
+            if (sscanf(de->d_name, "%d", &current_id) == 1)
+            {
+                if (current_id >= next_session_id)
+                    next_session_id = current_id + 1;
             }
         }
+
         closedir(dir);
     }
 
-    // Create the full path string for the new directory
     char folder_path[64];
-    snprintf(folder_path, sizeof(folder_path), "/sdcard/%d", next_session_id);
 
-    // Create the physical directory on the FAT32 filesystem
-    struct stat st = {0};
-    if (stat(folder_path, &st) == -1) {
-        if (mkdir(folder_path, 0777) == 0) {
-            ESP_LOGW("SYSTEM", "Created brand new session folder: %s", folder_path);
-        } else {
-            ESP_LOGE("SYSTEM", "Failed to create directory %s", folder_path);
-            return;
-        }
+    snprintf(folder_path,
+            sizeof(folder_path),
+            "/sdcard/%d",
+            next_session_id);
+
+    if (mkdir(folder_path, 0777) != 0)
+    {
+        ESP_LOGE(TAG, "Failed to create directory %s", folder_path);
+        return;
     }
 
-    // Update the global path variable for your logging loops to use
-    snprintf(current_log_path, sizeof(current_log_path), "%s/sensor_log.txt", folder_path);
+    ESP_LOGI(TAG, "Created session folder %s", folder_path);
+
+    snprintf(current_log_path,
+            sizeof(current_log_path),
+            "%s/sensor_log.txt",
+            folder_path);
+
+    snprintf(current_setup_path,
+            sizeof(current_setup_path),
+            "%s/sensor_data.txt",
+            folder_path);
+
+    FILE *f = fopen(current_log_path, "w");
+    if (f)
+    {
+        fprintf(f,
+                "Timestamp,Sample_Index,Gyro_X,Gyro_Y,Gyro_Z,Accel_X,Accel_Y,Accel_Z\n");
+        fclose(f);
+    }
+
+    f = fopen(current_setup_path, "w");
+    if (f)
+    {
+        fclose(f);
+    }
 }
 
-void log_acc_info(const char *timestamp) {
+void log_acc_info(const char *timestamp)
+{
     if (!sd_card_ready) return;
 
-    FILE *f = fopen(current_log_path, "a"); // "a" opens in standard ASCII text append mode
-    if (f == NULL) return;
+    FILE *f = fopen(current_setup_path, "a");
+    if (f == NULL) 
+    {
+        ESP_LOGE(TAG, "Failed to open %s", current_setup_path);
+        return;
+    }
 
-    fprintf(f, "freq: %d\n i2c speed: %d\n samples per interrupt: %d\n start time: %s\n", FREQ, I2C_MASTER_CLK_SPEED, NUM_SAMPLES_PER_BATCH, timestamp);
+    fprintf(f,
+            "Frequency: %d Hz\n"
+            "I2C speed: %d Hz\n"
+            "Samples per interrupt: %d\n"
+            "Start time: %s\n",
+            FREQ,
+            I2C_MASTER_CLK_SPEED,
+            NUM_SAMPLES_PER_BATCH,
+            timestamp);
 
     fclose(f);
 }
@@ -193,7 +274,11 @@ void log_text_to_sd(const char *timestamp, sensor_sample *samples, int count) {
     if (!sd_card_ready) return;
 
     FILE *f = fopen(current_log_path, "a");
-    if (f == NULL) return;
+    if (f == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to open %s", current_log_path);
+        return;
+    }
 
     for (int i = 0; i < count; i++) {
         fprintf(f, "%s,%d,%d,%d,%d,%d,%d,%d\n",
@@ -204,11 +289,22 @@ void log_text_to_sd(const char *timestamp, sensor_sample *samples, int count) {
     fclose(f);
 }
 
+#define HOUR_US (3600ULL * 1000000ULL)
+#define MIN_US (60ULL * 1000000ULL)
+#define HALF_HOUR_US (1800ULL * 1000000ULL)
+
 void app_main(void)
 {
+    //LED
     led_init();
+    adc_init();
+
+    //RTC
+    get_time_remote();
+
+    //SD Card
     init_sd_card();
-    init_internal_clock();
+    create_next_session_folder();
     
     i2c_init();
     lsm6ds3_init();
@@ -217,6 +313,8 @@ void app_main(void)
     interrupt_init();
     lsm6ds3_setup_event_window();
     lsm6ds3_configure_motion_interrupt();
+
+    print_time();
 
     lsm6ds3_start();
 
@@ -236,9 +334,28 @@ void app_main(void)
     strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);   
     log_acc_info(strftime_buf);
 
+    ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(MIN_US));
+
     while (1)
-    {
+    {   
         esp_light_sleep_start();
+
+        esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+
+        if (cause == ESP_SLEEP_WAKEUP_TIMER)
+        {
+            float voltage = ((float) read_adc() / 4095.0f) * 3.3f * 5.7; // Assuming a 12-bit ADC and 3.3V reference
+
+            ESP_LOGI(TAG, "Voltage: %.2f V", voltage);
+
+            send_thingspeak_data(voltage);
+
+            vTaskDelay(pdMS_TO_TICKS(1000));
+
+            ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(HOUR_US));
+
+            continue;
+        } 
 
         gpio_set_level(BLINK_LED_PIN, 1);
 
@@ -267,6 +384,6 @@ void app_main(void)
         }
         
         gpio_set_level(BLINK_LED_PIN, 0);
-        vTaskDelay(pdMS_TO_TICKS(10)); 
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

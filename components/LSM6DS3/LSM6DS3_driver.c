@@ -116,14 +116,8 @@ esp_err_t lsm6ds3_stop(void)
  */
 esp_err_t lsm6ds3_configure_motion_interrupt(void)
 {
-    // ESP_ERROR_CHECK(i2c_write_reg(CTRL9_XL, 0x38)); // Enable wake-up detection on all axes and set the threshold to 1 LSB (0.0625g)
-    // ESP_ERROR_CHECK(i2c_write_reg(WAKE_UP_THS, 0x01)); // Set wake-up threshold
-    // ESP_ERROR_CHECK(i2c_write_reg(WAKE_UP_DUR, 0x00)); // Set wake-up duration
-    // ESP_ERROR_CHECK(i2c_write_reg(TAP_CFG, 0x01)); // Enable tap detection
-    // ESP_ERROR_CHECK(i2c_write_reg(MD2_CFG, 0x20)); // Enable wake-up interrupt on INT2
-
     ESP_ERROR_CHECK(i2c_write_reg(CTRL9_XL, 0x38));    // Turn on X, Y, Z wakeup
-    ESP_ERROR_CHECK(i2c_write_reg(WAKE_UP_THS, 0x02)); // ~200mg threshold (sensitive enough to catch the whole window)
+    ESP_ERROR_CHECK(i2c_write_reg(WAKE_UP_THS, 0x01)); // ~200mg threshold (sensitive enough to catch the whole window)
     ESP_ERROR_CHECK(i2c_write_reg(WAKE_UP_DUR, 0x00)); 
     
     // CRITICAL: Set Bit 0 (LIR) = 1 to LATCH the interrupt flag.
