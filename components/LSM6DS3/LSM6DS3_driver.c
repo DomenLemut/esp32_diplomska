@@ -184,7 +184,7 @@ esp_err_t lsm6ds3_setup_event_window(void)
 
     ESP_ERROR_CHECK(i2c_write_reg(FIFO_CTRL3, 0x09)); // 3. Enable both Accel and Gyro to store data 1-to-1
 
-    ESP_ERROR_CHECK(i2c_write_reg(FIFO_CTRL4, 0x40)); // 4. Route the INT2 signal line directly to the FIFO trigger engine
+    // ESP_ERROR_CHECK(i2c_write_reg(FIFO_CTRL4, 0x40)); // 4. Route the INT2 signal line directly to the FIFO trigger engine
 
     ESP_ERROR_CHECK(i2c_write_reg(FIFO_CTRL5, ((SAMPLE_DIV << 3) | 0x04))); // 5. Put FIFO into Bypass-to-Stream Mode (0x04)
 
