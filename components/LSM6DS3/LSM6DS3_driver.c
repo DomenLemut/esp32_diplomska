@@ -54,6 +54,34 @@ esp_err_t lsm6ds3_init(void) {
  */
 esp_err_t lsm6ds3_setup_continuous_with_wakeup(void)
 {
+    ESP_ERROR_CHECK(i2c_write_reg(CTRL1_XL, (SAMPLE_DIV << 4) | 0)); // enable accelerometer ODR
+    ESP_ERROR_CHECK(i2c_write_reg(CTRL2_G, (SAMPLE_DIV << 4) | 0)); // enable gyroscope ODR
+    // ESP_ERROR_CHECK(i2c_write_reg(FIFO_CTRL5, ((SAMPLE_DIV << 3) | 6))); // enable FIFO ODR and set FIFO mode to continuous
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Starts the sensor with setting speed registers of sensors and FIFO
+ * @return esp_err_t Return error values
+ */
+esp_err_t lsm6ds3_stop(void)
+{
+    ESP_ERROR_CHECK(i2c_write_reg(CTRL1_XL, 0x00)); // Disable accelerometer ODR
+    ESP_ERROR_CHECK(i2c_write_reg(CTRL2_G, 0x00)); // Disable gyroscope ODR
+    ESP_ERROR_CHECK(i2c_write_reg(FIFO_CTRL5, 0x00)); // Disable FIFO ODR
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Sets up the wake-up motion interrupt
+ * @return esp_err_t Return error values
+ */
+esp_err_t lsm6ds3_configure_motion_interrupt(void)
+{
+    ESP_ERROR_CHECK(i2c_write_reg(CTRL9_XL, 0x38));    // Turn on X, Y, Z wakeup
+    ESP_ERROR_CHECK(i2c_write_reg(WAKE_UP_THS, 0x01)); // ~200mg threshold (sensitive enough to catch the whole window)
     // 1. Enable Auto-Increment & Block Data Update
     ESP_ERROR_CHECK(i2c_write_reg(CTRL3_C, 0x44)); 
 

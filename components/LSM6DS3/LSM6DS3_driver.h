@@ -11,12 +11,12 @@
 #define LSM6DS3_INT2                14
 #define LSM6DS3_INT1                27
 
-#define NUM_SAMPLES_PER_BATCH       100
+#define NUM_SAMPLES_PER_BATCH       208
 #define BYTES_PER_SAMPLE            12
 #define FIFO_THR_BYTES (BYTES_PER_SAMPLE * NUM_SAMPLES_PER_BATCH)
 
-#define SAMPLE_DIV 6
-#define FREQ (1 << SAMPLE_DIV) * 13
+#define SAMPLE_DIV 4
+#define FREQ (1 << (SAMPLE_DIV - 1)) * 13
 #define I2C_MASTER_CLK_SPEED 400000
 
 esp_err_t i2c_init(void);
